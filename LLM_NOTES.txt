@@ -1,0 +1,62 @@
+# Memory MCP - LLM Notes
+
+## Mimari Özet
+- FastAPI tabanlı tek servis.
+- Postgres 16 + pgvector ile hem vektör hem full-text arama.
+- Alembic ile migration yönetimi; production ortamında `create_all` kullanılmaz.
+- MCP endpoint `/mcp` altında tek bir JSON router ile araç isimlerine göre dispatch.
+- LLM entegrasyonu OpenAI-compatible endpoint üzerinden; timeout + retry + circuit breaker var.
+
+## Kritik Bileşenler
+- `memory_mcp/services/turns.py`: thread oluşturma ve turn ingest.
+- `memory_mcp/services/plans.py`: plan registry yönetimi.
+- `memory_mcp/services/distill.py`: turn’lerden distilled memory çıkarma.
+- `memory_mcp/services/memory_items.py`: dedup/supersede zinciri.
+- `memory_mcp/services/retrieval.py`: hybrid retrieval + RRF fusion + token budget.
+- `memory_mcp/services/audit.py`: plan consistency ve stale referans kontrolü.
+- `memory_mcp/services/shared.py`: HMAC imzalı export/import.
+- `memory_mcp/services/llm_client.py`: LLM çağrıları, embedding cache, circuit breaker.
+- `memory_mcp/services/jobs.py`: DB-backed async job worker.
+
+## Veri Modeli
+- `threads`: tek-tenant çalışma alanı.
+- `plans`: plan registry ve topic separation.
+- `turns`: ham konuşma akışı, embedding + tsvector.
+- `memory_items`: distilled memory ve supersede zinciri.
+- `shared_packages`: dış paylaşım paketleri.
+- `jobs`: embedding/distill/retention işleri.
+
+## Dedup + Supersede Politikası
+- Vector + keyword adayları toplanır.
+- Similarity >= `DEDUP_SIM_THRESHOLD` ise dedup (yeni item oluşturulmaz).
+- Similarity >= `SUPERSEDE_SIM_THRESHOLD` ve materyal fark varsa supersede zinciri kurulur.
+- Superseded item’lar arama ve stale detection için korunur.
+- LLM karşılaştırma adımı “same/update/different” sınıflandırmasıyla guardrail sağlar.
+
+## Retrieval Notları
+- `mode=fast`: yalnız distilled, küçük top_k, düşük token budget.
+- `mode=deep`: hybrid + RRF + opsiyonel LLM rerank.
+- `ENABLE_LLM_RERANK` sadece düşük güven durumunda çalışır.
+- `explain=true` ile her chunk için skor bileşenleri döndürülür.
+
+## Güvenlik
+- Prompt injection: sistem promptu her LLM çağrısında “ignore instructions” içerir.
+- HMAC paketi: `SHARED_HMAC_SECRET` zorunlu.
+- Input validation: Pydantic modelleri zorunlu.
+
+## Test Modu
+- `FAKE_LLM=true` ile deterministik embedding ve JSON çıktı.
+- Entegrasyon testleri Postgres + pgvector container’ı üzerinden koşar.
+
+## Job Sistemi
+- `embed_turn` ve `distill_turn` işleri DB üzerinden işlenir.
+- `retention_cleanup` periyodik olarak retention politikasını uygular.
+
+## Retention Politikası
+- `RETENTION_DAYS_TURNS` ve `RETENTION_DAYS_MEMORY` ile veri saklama süresi kontrol edilir.
+- `RETENTION_CLEANUP_INTERVAL_S` periyodik cleanup aralığını belirler.
+
+## Genişletme Notları
+- Yeni memory tipleri eklemek için `MemoryType` enumu + migration güncellenmeli.
+- Embedding boyutu değişirse yeni migration gerekir.
+- Retrieval rerank için yeni LLM sağlayıcı eklenecekse `LLMClient` tek noktadır.
